@@ -266,33 +266,7 @@ void readBootStrapSector(FILE* file, BootSector* bs) {
 }
 
 void displayDirectoryEntry(DirectoryEntry* de) {
-	int b;
-	for (b = 7; b >= 0; b--) {
-		if (de->filename[b] == ' ') {
-			de->filename[b] = 0;
-		} else {
-			break;
-		}
-	}
-	for (b = 2; b >= 0; b--) {
-		if (de->extension[b] == ' ') {
-			de->extension[b] = 0;
-		} else {
-			break;
-		}
-	}
-	printf("Filename:   %.*s", 8, de->filename);
-	if (de->extension[0] != 0) {
-		printf(".%.*s\n", 3, de->extension);
-	} else {
-		printf("\n");
-	}
-	printf("Attributes: 0x%02x\n", de->attributes);
-	//BYTE reserved[10];
-	//BytePair timeCreated;
-	//BytePair dateCreated;
-	printf("Start:      %d\n", le2be2(de->startingCluster));
-	printf("Filesize:   %d\n", le2be4(de->fileSize));
+	printf("%8.*s %3.*s %13d\n", 8, de->filename, 3, de->extension, le2be4(de->fileSize));
 }
 
 void scanDirectory(Sector directory) {
@@ -302,36 +276,43 @@ void scanDirectory(Sector directory) {
 	
 	while (!done) {
 		int e;
+		//      ADDNAME  EX_        14,032 08-31-94  12:00a
+		printf("FILENAME EXT          SIZE     DATE    TIME\n");
 		for (e = 0; e < entriesPerSector; e++) {
-			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeof(DirectoryEntry));
 			int b;
 			int offset = e * sizeof(DirectoryEntry);
-			for (b = 0; b < 8; b++) {
-				de->filename[b] = directory[offset + b];
-			}
-			for (b = 0; b < 3; b++) {
-				de->extension[b] = directory[offset + 8 + b];
-			}
-			de->attributes = directory[offset + 11];
-			for (b = 0; b < 10; b++) {
-				de->reserved[b] = directory[offset + 12 + b];
-			}
-			de->timeCreated.bytes[0] = directory[offset + 22];
-			de->timeCreated.bytes[1] = directory[offset + 23];
-			de->dateCreated.bytes[0] = directory[offset + 24];
-			de->dateCreated.bytes[1] = directory[offset + 25];
-			de->startingCluster.bytes[0] = directory[offset + 26];
-			de->startingCluster.bytes[1] = directory[offset + 27];
-			for (b = 0; b < 4; b++) {
-				de->fileSize.bytes[b] = directory[offset + 28 + b];
-			}
 			
-			displayDirectoryEntry(de);
-			
-			// if entry is itself a directory
-			// scanDirectory(new sector)
-			
-			free(de);
+			if (directory[offset] != DELETED && directory[offset] != NOT_USED) {
+				DirectoryEntry* de = (DirectoryEntry*)malloc(sizeof(DirectoryEntry));
+				for (b = 0; b < 8; b++) {
+					de->filename[b] = directory[offset + b];
+				}
+				if (de->filename[0] == ACTUAL_E5) {
+					de->filename[0] = 0xe5;
+				}
+				for (b = 0; b < 3; b++) {
+					de->extension[b] = directory[offset + 8 + b];
+				}
+				de->attributes = directory[offset + 11];
+				for (b = 0; b < 10; b++) {
+					de->reserved[b] = directory[offset + 12 + b];
+				}
+				de->timeCreated.bytes[0] = directory[offset + 22];
+				de->timeCreated.bytes[1] = directory[offset + 23];
+				de->dateCreated.bytes[0] = directory[offset + 24];
+				de->dateCreated.bytes[1] = directory[offset + 25];
+				de->startingCluster.bytes[0] = directory[offset + 26];
+				de->startingCluster.bytes[1] = directory[offset + 27];
+				for (b = 0; b < 4; b++) {
+					de->fileSize.bytes[b] = directory[offset + 28 + b];
+				}
+				
+				displayDirectoryEntry(de);
+				
+				// if entry is itself a directory
+				// scanDirectory(new sector)
+				free(de);
+			}
 		}
 		// if not the last sector in the directory
 		// get the next sector and keep going
@@ -345,6 +326,7 @@ void readFilesInFAT(FILE* fs, BootSector* bs) {
 	int sizeofSector = fatInfo->sizeofSector;
 	int startFAT = sizeofSector * le2be2(bs->numReservedSectors);
 	int dirEntriesPerSector = fatInfo->numRootEntries * sizeof(DirectoryEntry) / sizeofSector;
+	int numRootSectors = fatInfo->numRootEntries / dirEntriesPerSector;
 	
 	int i;
 	for (i = 0; i < 1; i++) {
@@ -353,70 +335,46 @@ void readFilesInFAT(FILE* fs, BootSector* bs) {
 		fread(fatSector, sizeofSector, 1, fs);
 		
 		int j;
-		if (i == 0) {
-			j = 3; // first two entries in FAT are reserved
-		} else {
-			j = 0;
-		}
-		for (; j < 4; j += 3) {
-			ByteTriplet *bt = (ByteTriplet*)malloc(sizeof(ByteTriplet));
-			bt->bytes[0] = fatSector[j];
-			bt->bytes[1] = fatSector[j + 1];
-			bt->bytes[2] = fatSector[j + 2];
+		// first two entries in FAT are reserved
+		// start scanning at 2
+		for (j = 2; j < numRootSectors + 2; j++) {
+			int fileCluster;
+			int offset;
 			
-			int file1 = le2be3(*bt, 1);
-			int file2 = le2be3(*bt, 2);
+			if (fatInfo->fatType == 12) {
+				ByteTriplet *bt = (ByteTriplet*)malloc(sizeof(ByteTriplet));
+				if (j % 2) {
+					offset = (j - 1) * 3 / 2 + 1;
+					bt->bytes[1] = fatSector[offset];
+					bt->bytes[2] = fatSector[offset + 1];
+					fileCluster = le2be3(*bt, 2);
+				} else {
+					offset = j * 3 / 2;
+					bt->bytes[0] = fatSector[offset];
+					bt->bytes[1] = fatSector[offset + 1];
+					fileCluster = le2be3(*bt, 1);
+				}
+			} else if (fatInfo->fatType == 16) {
+				BytePair *bp = (BytePair*)malloc(sizeof(BytePair));
+				offset = j * 2;
+				bp->bytes[0] = fatSector[offset];
+				bp->bytes[1] = fatSector[offset + 1];
+				fileCluster = le2be2(*bp);
+			} else {
+				return;
+			}
 			
 			Sector fileSector;
-			if (file1 > RESERVED_12 && file1 < BAD_CLUSTER_12) {
+			if (fileCluster > RESERVED_12 && fileCluster < BAD_CLUSTER_12) {
 				// sectors listed in FAT are relative to the first data sector + 2
 				// value returned from getAbsoluteCluster is not 0-based index
-				file1 = getAbsoluteCluster(file1) - 1;
+				fileCluster = getAbsoluteCluster(fileCluster) - 1;
 				
 				fileSector = (BYTE*)malloc(sizeofSector);
-				fseek(fs, sizeofSector * file1, SEEK_SET);
+				fseek(fs, sizeofSector * fileCluster, SEEK_SET);
 				fread(fileSector, sizeofSector, 1, fs);
 				
 				scanDirectory(fileSector);
-				
-				free(fileSector);
-			}
-			
-			if (file2 > RESERVED_12 && file2 < BAD_CLUSTER_12) {
-				file2 = getAbsoluteCluster(file2) - 1;
-				
-				fileSector = (BYTE*)malloc(sizeofSector);
-				fseek(fs, sizeofSector * file1, SEEK_SET);
-				fread(fileSector, sizeofSector, 1, fs);
-				
-				int e;
-				for (e = 0; e < dirEntriesPerSector; e++) {
-					DirectoryEntry* de = (DirectoryEntry*)malloc(sizeof(DirectoryEntry));
-					int b;
-					int offset = e * sizeof(DirectoryEntry);
-					for (b = 0; b < 8; b++) {
-						de->filename[b] = fileSector[offset + b];
-					}
-					for (b = 0; b < 3; b++) {
-						de->extension[b] = fileSector[offset + 8 + b];
-					}
-					de->attributes = fileSector[offset + 11];
-					for (b = 0; b < 10; b++) {
-						de->reserved[b] = fileSector[offset + 12 + b];
-					}
-					de->timeCreated.bytes[0] = fileSector[offset + 22];
-					de->timeCreated.bytes[1] = fileSector[offset + 23];
-					de->dateCreated.bytes[0] = fileSector[offset + 24];
-					de->dateCreated.bytes[1] = fileSector[offset + 25];
-					de->startingCluster.bytes[0] = fileSector[offset + 26];
-					de->startingCluster.bytes[1] = fileSector[offset + 27];
-					for (b = 0; b < 4; b++) {
-						de->fileSize.bytes[b] = fileSector[offset + 28 + b];
-					}
-					
-					displayDirectoryEntry(de);
-					free(de);
-				}
 				
 				free(fileSector);
 			}
