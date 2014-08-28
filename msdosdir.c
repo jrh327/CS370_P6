@@ -231,6 +231,10 @@ int getAbsoluteCluster(int relativeCluster) {
 	return relativeCluster - 2 + fatInfo->firstDataSector;
 }
 
+int clusterRelativeToRoot(int absoluteCluster) {
+	return absoluteCluster + (fatInfo->numRootEntries * sizeof(DirectoryEntry) / fatInfo->sizeofSector);
+}
+
 void readBootStrapSector(FILE* file, BootSector* bs) {
 	fread(bs, sizeof(BootSector), 1, file);
 	//hexDump("BootSector", &bs, sizeof(BootSector));
@@ -325,7 +329,7 @@ void readFilesInFAT(FILE* fs, BootSector* bs) {
 	int numFATSectors = fatInfo->numFATSectors;
 	int sizeofSector = fatInfo->sizeofSector;
 	int startFAT = sizeofSector * le2be2(bs->numReservedSectors);
-	int dirEntriesPerSector = fatInfo->numRootEntries * sizeof(DirectoryEntry) / sizeofSector;
+	int dirEntriesPerSector = sizeofSector / sizeof(DirectoryEntry);
 	int numRootSectors = fatInfo->numRootEntries / dirEntriesPerSector;
 	
 	int i;
@@ -379,6 +383,8 @@ void readFilesInFAT(FILE* fs, BootSector* bs) {
 				free(fileSector);
 			}
 		}
+		
+		free(fatSector);
 	}
 }
 
