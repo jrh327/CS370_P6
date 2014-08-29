@@ -362,7 +362,7 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 			// write out the sector
 			//hexDump("file sector", fileSector, sizeToRead);
 			
-			fwrite(fileSector, 1, sizeToRead, f);
+			fwrite(fileSector, sizeToRead, 1, f);
 			
 			free(fileSector);
 			
