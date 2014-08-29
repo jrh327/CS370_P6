@@ -386,6 +386,9 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 	
 	free(fatSector);
 	fclose(f);
+	
+	fatInfo->filesFound++;
+	fatInfo->totalSize += le2be4(de->fileSize);				
 }
 
 /**
@@ -447,9 +450,6 @@ void scanDirectorySector(FILE* fs, Sector directory) {
 					}
 				} else {
 					// don't want to try to extract a directory
-					fatInfo->filesFound++;
-					fatInfo->totalSize += le2be4(de->fileSize);
-					
 					extractFile(fs, de);
 				}
 			}
