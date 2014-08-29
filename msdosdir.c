@@ -163,7 +163,7 @@ int getAbsoluteCluster(int relativeCluster);
 int clusterRelativeToRoot(int absoluteCluster);
 int getNextCluster(Sector fatSector, int cluster);
 void displayBootStrapInfo(BootSector* bs);
-void readBootStrapSector(FILE* file, BootSector* bs);
+void readBootStrapSector(FILE* fs, BootSector* bs);
 void displayDirectoryEntry(DirectoryEntry* de);
 void scanDirectorySector(FILE* fs, Sector directory);
 void scanDirectory(FILE* fs, int cluster, int maxClusters);
@@ -280,8 +280,8 @@ void displayBootStrapInfo(BootSector* bs) {
 	printf("FAT Type is FAT%d, disk has %d clusters\n", fatInfo->fatType, getNumberClusters(bs));
 }
 
-void readBootStrapSector(FILE* file, BootSector* bs) {
-	fread(bs, sizeof(BootSector), 1, file);
+void readBootStrapSector(FILE* fs, BootSector* bs) {
+	fread(bs, sizeof(BootSector), 1, fs);
 	
 	fatInfo = (FATInfo*)malloc(sizeof(FATInfo));
 	fatInfo->fatType = getFATType(bs);
@@ -351,18 +351,6 @@ void scanDirectorySector(FILE* fs, Sector directory) {
 		int offset = e * sizeofDirEntry;
 		
 		if (directory[offset] != DELETED && directory[offset] != NOT_USED) {
-	BYTE filename[8];
-	BYTE extension[3];
-	BYTE attributes;
-	BYTE reserved;
-	BytePair timeCreated;
-	BytePair dateCreated;
-	BytePair dateAccessed;
-	BytePair startingClusterUpper;
-	BytePair timeModified;
-	BytePair dateModified;
-	BytePair startingCluster;
-	ByteQuad fileSize;
 			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeofDirEntry);
 			for (b = 0; b < 8; b++) {
 				de->filename[b] = directory[offset + b];
