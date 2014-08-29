@@ -74,41 +74,47 @@ typedef struct info {
 	int numRootEntries;
 	int numRootClusters;
 	int reservedSectors;
+	int filesFound;
+	long totalSize;
 } FATInfo;
 
 FATInfo* fatInfo;
 
 typedef BYTE* Sector;
 
-typedef struct folder {
-	BYTE name[11];
-	BYTE attribute;
-	ByteTriplet createTime;
-	BytePair createDate;
-	BytePair lastAccessDate;
-	BytePair lastModifiedTime;
-	BytePair lastModifiedDate;
-	BytePair startingClusterNumberInFAT;
-	ByteQuad size;
-} Folder;
-
 /*
  * 00-07	Filename
  * 08-10	Filename extension
  *    11	File attributes
- * 12-21	Reserved
- * 22-23	Time created or last updated
- * 24-25	Date created or last updated
- * 26-27	Starting cluster number for file
+ *    12	Reserved for use by WinNT
+ *    13	Time created (tenth of a second)
+ * 14-15	Time created
+ * 		Hour	5 bits
+ * 		Minutes	6 bits
+ * 		Seconds	5 bits
+ * 16-17	Date created
+ * 		Year	7 bits
+ * 		Month	4 bits
+ * 		Day	5 bits
+ * 18-19	Date last accessed
+ * 20-21	Upper half of entry's first cluster, 0 for FAT12 and FAT16
+ * 22-23	Time last modified
+ * 24-25	Date last modified
+ * 26-27	Lower half of entry's first cluster
  * 28-31	File size in bytes
  */
 typedef struct direntry {
 	BYTE filename[8];
 	BYTE extension[3];
 	BYTE attributes;
-	BYTE reserved[10];
+	BYTE reserved;
+	BYTE timeCreatedTenthSec;
 	BytePair timeCreated;
 	BytePair dateCreated;
+	BytePair dateAccessed;
+	BytePair startingClusterUpper;
+	BytePair timeModified;
+	BytePair dateModified;
 	BytePair startingCluster;
 	ByteQuad fileSize;
 } DirectoryEntry;
@@ -125,6 +131,16 @@ const int NOT_USED = 0x00;
 const int DELETED = 0xe5;
 const int ACTUAL_E5 = 0x05;
 const int DIRECTORY = 0x2e;
+
+// Directory entry attributes
+const int ATTR_READ_ONLY = 0x01; // File is read only
+const int ATTR_HIDDEN = 0x02; // Hidden file
+const int ATTR_SYSTEM_FILE = 0x04; // Indicates a system file. These are hidden as well
+const int ATTR_VOLUME_LABEL = 0x08; // Disk's volume label. Only found in the root directory
+const int ATTR_SUB_DIR = 0x10; // The entry describes a subdirectory
+const int ATTR_ARCHIVE = 0x20; // Archive flag. Set when the file is modified. Used by backup programs
+const int ATTR_UNUSED1 = 0x40; // Not used; must be set to 0
+const int ATTR_UNUSED2 = 0x80; // Not used; must be set to 0
 
 // FAT entry special values
 const int AVAILABLE_12 = 0x000;
@@ -146,9 +162,10 @@ int getFATType(BootSector* bs);
 int getAbsoluteCluster(int relativeCluster);
 int clusterRelativeToRoot(int absoluteCluster);
 int getNextCluster(Sector fatSector, int cluster);
-int scanDirectorySector(Sector directory);
+void displayBootStrapInfo(BootSector* bs);
 void readBootStrapSector(FILE* file, BootSector* bs);
 void displayDirectoryEntry(DirectoryEntry* de);
+void scanDirectorySector(FILE* fs, Sector directory);
 void scanDirectory(FILE* fs, int cluster, int maxClusters);
 void hexDump(char *desc, void *addr, int len);
 
@@ -240,9 +257,7 @@ int clusterRelativeToRoot(int absoluteCluster) {
 	return absoluteCluster + fatInfo->numRootClusters;
 }
 
-void readBootStrapSector(FILE* file, BootSector* bs) {
-	fread(bs, sizeof(BootSector), 1, file);
-	//hexDump("BootSector", &bs, sizeof(BootSector));
+void displayBootStrapInfo(BootSector* bs) {
 	printf("OEM:                 %.*s\n", 8, bs->OEM);
 	printf("Bytes Per Sector:    %d\n", le2be2(bs->numBytesPerSector));
 	printf("Sectors Per Cluster: %d\n", bs->numSectorsPerCluster);
@@ -262,6 +277,11 @@ void readBootStrapSector(FILE* file, BootSector* bs) {
 	printf("Volume SN:           0x%08x\n", le2be4(bs->volumeSN));
 	printf("Volume Label:        %.*s\n", 11, bs->volumeLabel);
 	printf("Format Type:         %.*s\n", 8, bs->formatType);
+	printf("FAT Type is FAT%d, disk has %d clusters\n", fatInfo->fatType, getNumberClusters(bs));
+}
+
+void readBootStrapSector(FILE* file, BootSector* bs) {
+	fread(bs, sizeof(BootSector), 1, file);
 	
 	fatInfo = (FATInfo*)malloc(sizeof(FATInfo));
 	fatInfo->fatType = getFATType(bs);
@@ -272,31 +292,78 @@ void readBootStrapSector(FILE* file, BootSector* bs) {
 	fatInfo->numRootEntries = le2be2(bs->numEntriesRootDir);
 	fatInfo->numRootClusters = fatInfo->numRootEntries * sizeof(DirectoryEntry) / fatInfo->sizeofSector;
 	fatInfo->reservedSectors = le2be2(bs->numReservedSectors);
-	
-	printf("FAT Type is FAT%d, disk has %d clusters\n", fatInfo->fatType, getNumberClusters(bs));
+	fatInfo->filesFound = 0;
+	fatInfo->totalSize = 0;
 }
 
 void displayDirectoryEntry(DirectoryEntry* de) {
-	printf("%8.*s %3.*s %13d\n", 8, de->filename, 3, de->extension, le2be4(de->fileSize));
+	int timeCreated = le2be2(de->timeCreated);
+	int hourCreated = (timeCreated & 0xf800) >> 11;
+	int minCreated = (timeCreated & 0x7e0) >> 5;
+	int secCreated = (timeCreated & 0x1f);
+	secCreated = secCreated * 2; // time resolution of 2 seconds
+	
+	int dateCreated = le2be2(de->dateCreated);
+	int yearCreated = ((dateCreated & 0xfe00) >> 9);
+	int monthCreated = (dateCreated & 0x1e0) >> 5;
+	int dayCreated = (dateCreated & 0x1f);
+	yearCreated = yearCreated + 1980; // year is offset by 1980
+	
+	int dateAccessed = le2be2(de->dateAccessed);
+	int yearAccessed = ((dateAccessed & 0xfe00) >> 9);
+	int monthAccessed = (dateAccessed & 0x1e0) >> 5;
+	int dayAccessed = (dateAccessed & 0x1f);
+	yearAccessed = yearAccessed + 1980;
+	
+	int timeModified = le2be2(de->timeModified);
+	int hourModified = (timeModified & 0xf800) >> 11;
+	int minModified = (timeModified & 0x7e0) >> 5;
+	int secModified = (timeModified & 0x1f);
+	secModified = secModified * 2;
+	
+	int dateModified = le2be2(de->dateModified);
+	int yearModified = ((dateModified & 0xfe00) >> 9);
+	int monthModified = (dateModified & 0x1e0) >> 5;
+	int dayModified = (dateModified & 0x1f);
+	yearModified = yearModified + 1980;
+	
+	printf("%8.*s %3.*s %10d  %02d-%02d-%04d %02d:%02d:%02d  %02d-%02d-%04d  %02d-%02d-%04d %02d:%02d:%02d\n",
+		8, de->filename, 3, de->extension, le2be4(de->fileSize),
+		monthCreated, dayCreated, yearCreated,
+		hourCreated, minCreated, secCreated,
+		monthAccessed, dayAccessed, yearAccessed,
+		monthModified, dayModified, yearModified,
+		hourModified, minModified, secModified);
 }
 
 /**
  * Scans a sector of a directory and prints out its entries
  * 
  * @param directory - The sector to scan
- * @return -1 if found the end of the directory, else 0
  */
-int scanDirectorySector(Sector directory) {
+void scanDirectorySector(FILE* fs, Sector directory) {
 	int sizeofDirEntry = sizeof(DirectoryEntry);
 	int entriesPerSector = fatInfo->sizeofSector / sizeofDirEntry;
 	
 	int e;
 	for (e = 0; e < entriesPerSector; e++) {
 		int b;
-		int offset = e * sizeof(DirectoryEntry);
+		int offset = e * sizeofDirEntry;
 		
 		if (directory[offset] != DELETED && directory[offset] != NOT_USED) {
-			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeof(DirectoryEntry));
+	BYTE filename[8];
+	BYTE extension[3];
+	BYTE attributes;
+	BYTE reserved;
+	BytePair timeCreated;
+	BytePair dateCreated;
+	BytePair dateAccessed;
+	BytePair startingClusterUpper;
+	BytePair timeModified;
+	BytePair dateModified;
+	BytePair startingCluster;
+	ByteQuad fileSize;
+			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeofDirEntry);
 			for (b = 0; b < 8; b++) {
 				de->filename[b] = directory[offset + b];
 			}
@@ -307,28 +374,47 @@ int scanDirectorySector(Sector directory) {
 				de->extension[b] = directory[offset + 8 + b];
 			}
 			de->attributes = directory[offset + 11];
-			for (b = 0; b < 10; b++) {
-				de->reserved[b] = directory[offset + 12 + b];
-			}
-			de->timeCreated.bytes[0] = directory[offset + 22];
-			de->timeCreated.bytes[1] = directory[offset + 23];
-			de->dateCreated.bytes[0] = directory[offset + 24];
-			de->dateCreated.bytes[1] = directory[offset + 25];
+			de->reserved = directory[offset + 12];
+			de->timeCreatedTenthSec = directory[offset + 13];
+			de->timeCreated.bytes[0] = directory[offset + 14];
+			de->timeCreated.bytes[0] = directory[offset + 15];
+			de->dateCreated.bytes[0] = directory[offset + 16];
+			de->dateCreated.bytes[0] = directory[offset + 17];
+			de->dateAccessed.bytes[0] = directory[offset + 18];
+			de->dateAccessed.bytes[0] = directory[offset + 19];
+			de->startingClusterUpper.bytes[0] = directory[offset + 20];
+			de->startingClusterUpper.bytes[0] = directory[offset + 21];
+			de->timeModified.bytes[0] = directory[offset + 22];
+			de->timeModified.bytes[1] = directory[offset + 23];
+			de->dateModified.bytes[0] = directory[offset + 24];
+			de->dateModified.bytes[1] = directory[offset + 25];
 			de->startingCluster.bytes[0] = directory[offset + 26];
 			de->startingCluster.bytes[1] = directory[offset + 27];
 			for (b = 0; b < 4; b++) {
 				de->fileSize.bytes[b] = directory[offset + 28 + b];
 			}
 			
-			displayDirectoryEntry(de);
+			if (!(de->attributes & ATTR_HIDDEN) && !(de->attributes & ATTR_SYSTEM_FILE)
+				&& !(de->attributes & ATTR_VOLUME_LABEL)
+			) {
+				fatInfo->filesFound++;
+				fatInfo->totalSize += le2be4(de->fileSize);
+				
+				displayDirectoryEntry(de);
+				
+				if (directory[offset] == DIRECTORY || de->attributes & ATTR_SUB_DIR) {
+					if (directory[offset + 1] != DIRECTORY) {
+						// don't scan if second byte in entry is also DIRECTORY
+						// this indicates that the cluster points to the parent
+						// which will result in infinite recursion
+						scanDirectory(fs, le2be2(de->startingCluster), 0);
+					}
+				}
+			}
 			
-			// if entry is itself a directory
-			// scanDirectory(new sector)
 			free(de);
 		}
 	}
-	
-	return 0;
 }
 
 int getNextCluster(Sector fatSector, int cluster) {
@@ -380,8 +466,7 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 	int nextCluster = cluster;
 	int curFATSector = -1;
 	
-	//      ADDNAME  EX_        14,032 08-31-94  12:00a
-	printf("FILENAME EXT          SIZE     DATE    TIME\n");
+	printf("FILENAME EXT       SIZE              CREATED    ACCESSED             MODIFIED\n");
 	
 	// malloc here just to be sure all frees have something to free
 	Sector fatSector = (BYTE*)malloc(sizeofSector);
@@ -400,14 +485,9 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 			fseek(fs, sizeofSector * absoluteCluster, SEEK_SET);
 			fread(fileSector, sizeofSector, 1, fs);
 			
-			int res = scanDirectorySector(fileSector);
+			scanDirectorySector(fs, fileSector);
 			
 			free(fileSector);
-			
-			if (res < 0) {
-				endOfDir = 1;
-				break;
-			}
 		} else {
 			
 			// otherwise stop searching
@@ -453,6 +533,8 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 	}
 	
 	free(fatSector);
+	
+	printf("%5d file(s) %9ld bytes\n", fatInfo->filesFound, fatInfo->totalSize);
 }
 
 void hexDump(char *desc, void *addr, int len) {
