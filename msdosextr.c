@@ -289,10 +289,38 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 			de->extension[i] = 0;
 		}
 	}
-	int cluster = clusterRelativeToRoot(getAbsoluteCluster(le2be2(de->startingCluster)));
-	printf("Extracting file %.*s.%.*s, starting at cluster %d\n", 8, de->filename, 3, de->extension, cluster);
 	
-	if (de->extension[0] == 'T' && de->extension[1] == 'X' && de->extension[2] == 'T') {
+	// create a string with the file's name
+	char filename[13];
+	int pos = 0;
+	// loop through until the end of the filename
+	for (i = 0; i < 8; i++) {
+		if (de->filename[i]) {
+			filename[pos] = de->filename[i];
+			pos++;
+		} else {
+			break;
+		}
+	}
+	// if there is an extension
+	// add the '.' and loop through extension
+	if (de->extension[0]) {
+		filename[pos] = '.';
+		pos++;
+		for (i = 0; i < 3; i++) {
+			if (de->extension[i]) {
+				filename[pos] = de->extension[i];
+				pos++;
+			} else {
+				break;
+			}
+		}
+	}
+	// make sure the string is properly terminated
+	filename[pos] = 0;
+	
+	printf("Extracting file %s\n", filename);
+	
 	int numFATSectors = fatInfo->numFATSectors;
 	int sizeofSector = fatInfo->sizeofSector;
 	int startFAT = sizeofSector * fatInfo->reservedSectors;
@@ -301,6 +329,12 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 	int nextCluster = le2be2(de->startingCluster);
 	int curFATSector = -1;
 	int size = le2be4(de->fileSize);
+	
+	FILE *f = fopen(filename, "wb");
+	if (f == NULL) {
+		printf("Error opening file %s to write!\n", filename);
+		return;
+	}
 	
 	// malloc here just to be sure all frees have something to free
 	Sector fatSector = (Sector)malloc(sizeofSector);
@@ -326,7 +360,9 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 			fread(fileSector, sizeToRead, 1, fs);
 			
 			// write out the sector
-			hexDump("file sector", fileSector, sizeToRead);
+			//hexDump("file sector", fileSector, sizeToRead);
+			
+			fwrite(fileSector, 1, sizeToRead, f);
 			
 			free(fileSector);
 			
@@ -349,7 +385,7 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 	}
 	
 	free(fatSector);
-	}
+	fclose(f);
 }
 
 /**
