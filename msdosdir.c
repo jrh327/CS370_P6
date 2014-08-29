@@ -162,6 +162,7 @@ int getFATType(BootSector* bs);
 int getAbsoluteCluster(int relativeCluster);
 int clusterRelativeToRoot(int absoluteCluster);
 int getNextCluster(Sector fatSector, int cluster);
+Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nextCluster);
 void displayBootStrapInfo(BootSector* bs);
 void readBootStrapSector(FILE* fs, BootSector* bs);
 void displayDirectoryEntry(DirectoryEntry* de);
@@ -339,6 +340,7 @@ void displayDirectoryEntry(DirectoryEntry* de) {
 /**
  * Scans a sector of a directory and prints out its entries
  * 
+ * @param fs - The file handle for the filesystem
  * @param directory - The sector to scan
  */
 void scanDirectorySector(FILE* fs, Sector directory) {
@@ -437,10 +439,47 @@ int getNextCluster(Sector fatSector, int cluster) {
 	return nextCluster;
 }
 
+Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nextCluster) {
+	int sizeofSector = fatInfo->sizeofSector;
+	int startFAT = sizeofSector * fatInfo->reservedSectors;
+	int entriesPerFATSector;
+	if (fatInfo->fatType == 12) {
+		entriesPerFATSector = sizeofSector * 2 / 3;
+	} else if (fatInfo->fatType == 16) {
+		entriesPerFATSector = sizeofSector / 2;
+	} else {
+		return fatSector;
+	}
+	
+	// check if the cluster being searched for is within the
+	// currently loaded FAT sector. If not, get the right one
+	
+	// the smallest cluster available in this FAT sector
+	int fatSectorMin = curFATSector * entriesPerFATSector;
+	
+	// if cluster being searched for is less than the lowest
+	// available or higher than the highest available
+	if (nextCluster < fatSectorMin || nextCluster > (fatSectorMin + entriesPerFATSector)) {
+		
+		// get the sector num required to contain nextCluster
+		curFATSector = sizeofSector * (nextCluster / entriesPerFATSector);
+		
+		// free the existing FAT sector
+		free(fatSector);
+		
+		// malloc and read the new sector
+		fatSector = (Sector)malloc(sizeofSector);
+		fseek(fs, startFAT + sizeofSector * curFATSector, SEEK_SET);
+		fread(fatSector, sizeofSector, 1, fs);
+	}
+	
+	return fatSector;
+}
+
 /**
  * Scans through a directory and lists its contents
  * 
- * @param fs - The file handler for the filesystem
+ * @param fs - The file handle for the filesystem
  * @param cluster - The cluster to start at
  * @param maxClusters - Only used for root directories.
  *                      Indicates how many contiguous clusters to check
@@ -457,7 +496,7 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 	printf("FILENAME EXT       SIZE              CREATED    ACCESSED             MODIFIED\n");
 	
 	// malloc here just to be sure all frees have something to free
-	Sector fatSector = (BYTE*)malloc(sizeofSector);
+	Sector fatSector = (Sector)malloc(sizeofSector);
 	
 	while (!endOfDir) {
 		
@@ -469,7 +508,7 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 			// get the correct address for this cluster
 			int absoluteCluster = getAbsoluteCluster(nextCluster);
 			
-			Sector fileSector = (BYTE*)malloc(sizeofSector);
+			Sector fileSector = (Sector)malloc(sizeofSector);
 			fseek(fs, sizeofSector * absoluteCluster, SEEK_SET);
 			fread(fileSector, sizeofSector, 1, fs);
 			
@@ -483,27 +522,7 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 			break;
 		}
 		
-		// check if the cluster being searched for is within the
-		// currently loaded FAT sector. If not, get the right one
-		
-		// the smallest cluster available in this FAT sector
-		int fatSectorMin = curFATSector * sizeofSector;
-		
-		// if cluster being searched for is less than the lowest
-		// available or higher than the highest available
-		if (nextCluster < fatSectorMin || nextCluster > (fatSectorMin + sizeofSector)) {
-			
-			// get the sector num required to contain nextCluster
-			curFATSector = sizeofSector * (nextCluster / sizeofSector);
-			
-			// free the existing FAT sector
-			free(fatSector);
-			
-			// malloc and read the new sector
-			fatSector = (BYTE*)malloc(sizeofSector);
-			fseek(fs, startFAT + sizeofSector * curFATSector, SEEK_SET);
-			fread(fatSector, sizeofSector, 1, fs);
-		}
+		fatSector = getCorrectFATSector(fs, fatSector, curFATSector, nextCluster);
 		
 		// if doing root directory, increment the cluster count
 		if (maxClusters > 0) {
