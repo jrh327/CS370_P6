@@ -536,6 +536,12 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 		} else {
 			// get the next cluster based on the current cluster
 			nextCluster = getNextCluster(fatSector, nextCluster);
+			if ((fatInfo->fatType == 12 && nextCluster >= END_MARKER_12) ||
+				(fatInfo->fatType == 16 && nextCluster >= END_MARKER_16)
+			) {
+				endOfDir = 1;
+				break;
+			}
 		}
 	}
 	
