@@ -72,6 +72,8 @@ typedef struct info {
 	int sizeofSector;
 	int firstDataSector;
 	int numRootEntries;
+	int numRootClusters;
+	int reservedSectors;
 } FATInfo;
 
 FATInfo* fatInfo;
@@ -134,18 +136,21 @@ const int BAD_CLUSTER_16 = 0xfff7;
 const int END_MARKER_12 = 0xff8;
 const int END_MARKER_16 = 0xfff8;
 
-int getFATType(BootSector* bs);
-BYTE* getVolumeLabel(BootSector* bs);
-BYTE* getVolumeSerialNumber(BootSector* bs);
-BYTE* getFormatType(BootSector* bs);
-void readBootStrapSector(FILE* fs, BootSector* bs);
-void readFilesInFAT(FILE* fs, BootSector* bs);
+const int FIRST_ROOT_CLUSTER = 2;
 
 int le2be2(BytePair bytes);
 int le2be3(ByteTriplet bytes, int which);
 int le2be4(ByteQuad bytes);
-
-void hexDump (char *desc, void *addr, int len);
+int getNumberClusters(BootSector* bs);
+int getFATType(BootSector* bs);
+int getAbsoluteCluster(int relativeCluster);
+int clusterRelativeToRoot(int absoluteCluster);
+int getNextCluster(Sector fatSector, int cluster);
+int scanDirectorySector(Sector directory);
+void readBootStrapSector(FILE* file, BootSector* bs);
+void displayDirectoryEntry(DirectoryEntry* de);
+void scanDirectory(FILE* fs, int cluster, int maxClusters);
+void hexDump(char *desc, void *addr, int len);
 
 int main (int argc, char *argv[]) {
 	if (argc != 2) {
@@ -160,7 +165,7 @@ int main (int argc, char *argv[]) {
 	}
 	BootSector* bs = (BootSector*)malloc(sizeof(BootSector));
 	readBootStrapSector(file, bs);
-	readFilesInFAT(file, bs);
+	scanDirectory(file, FIRST_ROOT_CLUSTER, fatInfo->numRootClusters);
 	
 	free(bs);
 	fclose(file);
@@ -232,7 +237,7 @@ int getAbsoluteCluster(int relativeCluster) {
 }
 
 int clusterRelativeToRoot(int absoluteCluster) {
-	return absoluteCluster + (fatInfo->numRootEntries * sizeof(DirectoryEntry) / fatInfo->sizeofSector);
+	return absoluteCluster + fatInfo->numRootClusters;
 }
 
 void readBootStrapSector(FILE* file, BootSector* bs) {
@@ -265,6 +270,8 @@ void readBootStrapSector(FILE* file, BootSector* bs) {
 	fatInfo->sizeofSector = le2be2(bs->numBytesPerSector);
 	fatInfo->firstDataSector = fatInfo->numCopiesFAT * le2be2(bs->numSectorsInFAT) + 1;
 	fatInfo->numRootEntries = le2be2(bs->numEntriesRootDir);
+	fatInfo->numRootClusters = fatInfo->numRootEntries * sizeof(DirectoryEntry) / fatInfo->sizeofSector;
+	fatInfo->reservedSectors = le2be2(bs->numReservedSectors);
 	
 	printf("FAT Type is FAT%d, disk has %d clusters\n", fatInfo->fatType, getNumberClusters(bs));
 }
@@ -273,119 +280,179 @@ void displayDirectoryEntry(DirectoryEntry* de) {
 	printf("%8.*s %3.*s %13d\n", 8, de->filename, 3, de->extension, le2be4(de->fileSize));
 }
 
-void scanDirectory(Sector directory) {
+/**
+ * Scans a sector of a directory and prints out its entries
+ * 
+ * @param directory - The sector to scan
+ * @return -1 if found the end of the directory, else 0
+ */
+int scanDirectorySector(Sector directory) {
 	int sizeofDirEntry = sizeof(DirectoryEntry);
 	int entriesPerSector = fatInfo->sizeofSector / sizeofDirEntry;
-	int done = 0;
 	
-	while (!done) {
-		int e;
-		//      ADDNAME  EX_        14,032 08-31-94  12:00a
-		printf("FILENAME EXT          SIZE     DATE    TIME\n");
-		for (e = 0; e < entriesPerSector; e++) {
-			int b;
-			int offset = e * sizeof(DirectoryEntry);
-			
-			if (directory[offset] != DELETED && directory[offset] != NOT_USED) {
-				DirectoryEntry* de = (DirectoryEntry*)malloc(sizeof(DirectoryEntry));
-				for (b = 0; b < 8; b++) {
-					de->filename[b] = directory[offset + b];
-				}
-				if (de->filename[0] == ACTUAL_E5) {
-					de->filename[0] = 0xe5;
-				}
-				for (b = 0; b < 3; b++) {
-					de->extension[b] = directory[offset + 8 + b];
-				}
-				de->attributes = directory[offset + 11];
-				for (b = 0; b < 10; b++) {
-					de->reserved[b] = directory[offset + 12 + b];
-				}
-				de->timeCreated.bytes[0] = directory[offset + 22];
-				de->timeCreated.bytes[1] = directory[offset + 23];
-				de->dateCreated.bytes[0] = directory[offset + 24];
-				de->dateCreated.bytes[1] = directory[offset + 25];
-				de->startingCluster.bytes[0] = directory[offset + 26];
-				de->startingCluster.bytes[1] = directory[offset + 27];
-				for (b = 0; b < 4; b++) {
-					de->fileSize.bytes[b] = directory[offset + 28 + b];
-				}
-				
-				displayDirectoryEntry(de);
-				
-				// if entry is itself a directory
-				// scanDirectory(new sector)
-				free(de);
+	int e;
+	for (e = 0; e < entriesPerSector; e++) {
+		int b;
+		int offset = e * sizeof(DirectoryEntry);
+		
+		if (directory[offset] != DELETED && directory[offset] != NOT_USED) {
+			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeof(DirectoryEntry));
+			for (b = 0; b < 8; b++) {
+				de->filename[b] = directory[offset + b];
 			}
+			if (de->filename[0] == ACTUAL_E5) {
+				de->filename[0] = 0xe5;
+			}
+			for (b = 0; b < 3; b++) {
+				de->extension[b] = directory[offset + 8 + b];
+			}
+			de->attributes = directory[offset + 11];
+			for (b = 0; b < 10; b++) {
+				de->reserved[b] = directory[offset + 12 + b];
+			}
+			de->timeCreated.bytes[0] = directory[offset + 22];
+			de->timeCreated.bytes[1] = directory[offset + 23];
+			de->dateCreated.bytes[0] = directory[offset + 24];
+			de->dateCreated.bytes[1] = directory[offset + 25];
+			de->startingCluster.bytes[0] = directory[offset + 26];
+			de->startingCluster.bytes[1] = directory[offset + 27];
+			for (b = 0; b < 4; b++) {
+				de->fileSize.bytes[b] = directory[offset + 28 + b];
+			}
+			
+			displayDirectoryEntry(de);
+			
+			// if entry is itself a directory
+			// scanDirectory(new sector)
+			free(de);
 		}
-		// if not the last sector in the directory
-		// get the next sector and keep going
-		// else
-		done = 1;
 	}
+	
+	return 0;
 }
 
-void readFilesInFAT(FILE* fs, BootSector* bs) {
+int getNextCluster(Sector fatSector, int cluster) {
+	int nextCluster;
+	int offset;
+	// even: i / 2 * 3
+	// odd: (i - 1) / 2 * 3 + 1
+	if (fatInfo->fatType == 12) {
+		ByteTriplet *bt = (ByteTriplet*)malloc(sizeof(ByteTriplet));
+		if (cluster % 2) {
+			offset = (cluster - 1) / 2 * 3 + 1;
+			bt->bytes[1] = fatSector[offset];
+			bt->bytes[2] = fatSector[offset + 1];
+			nextCluster = le2be3(*bt, 2);
+		} else {
+			offset = cluster / 2 * 3;
+			bt->bytes[0] = fatSector[offset];
+			bt->bytes[1] = fatSector[offset + 1];
+			nextCluster = le2be3(*bt, 1);
+		}
+		free(bt);
+	} else if (fatInfo->fatType == 16) {
+		BytePair *bp = (BytePair*)malloc(sizeof(BytePair));
+		offset = cluster * 2;
+		bp->bytes[0] = fatSector[offset];
+		bp->bytes[1] = fatSector[offset + 1];
+		nextCluster = le2be2(*bp);
+		free(bp);
+	} else {
+		nextCluster = -1;
+	}
+	return nextCluster;
+}
+
+/**
+ * Scans through a directory and lists its contents
+ * 
+ * @param fs - The file handler for the filesystem
+ * @param cluster - The cluster to start at
+ * @param maxClusters - Only used for root directories.
+ *                      Indicates how many contiguous clusters to check
+ */
+void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 	int numFATSectors = fatInfo->numFATSectors;
 	int sizeofSector = fatInfo->sizeofSector;
-	int startFAT = sizeofSector * le2be2(bs->numReservedSectors);
-	int dirEntriesPerSector = sizeofSector / sizeof(DirectoryEntry);
-	int numRootSectors = fatInfo->numRootEntries / dirEntriesPerSector;
+	int startFAT = sizeofSector * fatInfo->reservedSectors;
+	int endOfDir = 0;
+	int clusterCount = 0;
+	int nextCluster = cluster;
+	int curFATSector = -1;
 	
-	int i;
-	for (i = 0; i < 1; i++) {
-		Sector fatSector = (BYTE*)malloc(sizeofSector);
-		fseek(fs, sizeofSector * i + startFAT, SEEK_SET);
-		fread(fatSector, sizeofSector, 1, fs);
+	//      ADDNAME  EX_        14,032 08-31-94  12:00a
+	printf("FILENAME EXT          SIZE     DATE    TIME\n");
+	
+	// malloc here just to be sure all frees have something to free
+	Sector fatSector = (BYTE*)malloc(sizeofSector);
+	
+	while (!endOfDir) {
 		
-		int j;
-		// first two entries in FAT are reserved
-		// start scanning at 2
-		for (j = 2; j < numRootSectors + 2; j++) {
-			int fileCluster;
-			int offset;
+		// if we've got a good cluster
+		if ((fatInfo->fatType == 12 && nextCluster > RESERVED_12 && nextCluster < BAD_CLUSTER_12) ||
+			(fatInfo->fatType == 16 && nextCluster > RESERVED_16 && nextCluster < BAD_CLUSTER_16)
+		) {
 			
-			if (fatInfo->fatType == 12) {
-				ByteTriplet *bt = (ByteTriplet*)malloc(sizeof(ByteTriplet));
-				if (j % 2) {
-					offset = (j - 1) * 3 / 2 + 1;
-					bt->bytes[1] = fatSector[offset];
-					bt->bytes[2] = fatSector[offset + 1];
-					fileCluster = le2be3(*bt, 2);
-				} else {
-					offset = j * 3 / 2;
-					bt->bytes[0] = fatSector[offset];
-					bt->bytes[1] = fatSector[offset + 1];
-					fileCluster = le2be3(*bt, 1);
-				}
-			} else if (fatInfo->fatType == 16) {
-				BytePair *bp = (BytePair*)malloc(sizeof(BytePair));
-				offset = j * 2;
-				bp->bytes[0] = fatSector[offset];
-				bp->bytes[1] = fatSector[offset + 1];
-				fileCluster = le2be2(*bp);
-			} else {
-				return;
-			}
+			// get the correct address for this cluster
+			int absoluteCluster = getAbsoluteCluster(nextCluster);
 			
-			Sector fileSector;
-			if (fileCluster > RESERVED_12 && fileCluster < BAD_CLUSTER_12) {
-				// sectors listed in FAT are relative to the first data sector + 2
-				// value returned from getAbsoluteCluster is not 0-based index
-				fileCluster = getAbsoluteCluster(fileCluster) - 1;
-				
-				fileSector = (BYTE*)malloc(sizeofSector);
-				fseek(fs, sizeofSector * fileCluster, SEEK_SET);
-				fread(fileSector, sizeofSector, 1, fs);
-				
-				scanDirectory(fileSector);
-				
-				free(fileSector);
+			Sector fileSector = (BYTE*)malloc(sizeofSector);
+			fseek(fs, sizeofSector * absoluteCluster, SEEK_SET);
+			fread(fileSector, sizeofSector, 1, fs);
+			
+			int res = scanDirectorySector(fileSector);
+			
+			free(fileSector);
+			
+			if (res < 0) {
+				endOfDir = 1;
+				break;
 			}
+		} else {
+			
+			// otherwise stop searching
+			endOfDir = 1;
+			break;
 		}
 		
-		free(fatSector);
+		// check if the cluster being searched for is within the
+		// currently loaded FAT sector. If not, get the right one
+		
+		// the smallest cluster available in this FAT sector
+		int fatSectorMin = curFATSector * sizeofSector;
+		
+		// if cluster being searched for is less than the lowest
+		// available or higher than the highest available
+		if (nextCluster < fatSectorMin || nextCluster > (fatSectorMin + sizeofSector)) {
+			
+			// get the sector num required to contain nextCluster
+			curFATSector = sizeofSector * (nextCluster / sizeofSector);
+			
+			// free the existing FAT sector
+			free(fatSector);
+			
+			// malloc and read the new sector
+			fatSector = (BYTE*)malloc(sizeofSector);
+			fseek(fs, startFAT + sizeofSector * curFATSector, SEEK_SET);
+			fread(fatSector, sizeofSector, 1, fs);
+		}
+		
+		// if doing root directory, increment the cluster count
+		if (maxClusters > 0) {
+			// next cluster = start cluster + how many done so far
+			clusterCount++;
+			nextCluster = cluster + clusterCount;
+			if (clusterCount >= maxClusters) {
+				endOfDir = 1;
+				break;
+			}
+		} else {
+			// get the next cluster based on the current cluster
+			nextCluster = getNextCluster(fatSector, nextCluster);
+		}
 	}
+	
+	free(fatSector);
 }
 
 void hexDump(char *desc, void *addr, int len) {
