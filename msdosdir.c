@@ -181,7 +181,7 @@ int main (int argc, char *argv[]) {
 		printf("Could not open file %s\n", argv[1]);
 		return 1;
 	}
-	BootSector* bs = (BootSector*)malloc(sizeof(BootSector));
+	BootSector* bs = malloc(sizeof(BootSector));
 	readBootStrapSector(file, bs);
 	scanDirectory(file, FIRST_ROOT_CLUSTER, fatInfo->numRootClusters);
 	
@@ -284,7 +284,7 @@ void displayBootStrapInfo(BootSector* bs) {
 void readBootStrapSector(FILE* fs, BootSector* bs) {
 	fread(bs, sizeof(BootSector), 1, fs);
 	
-	fatInfo = (FATInfo*)malloc(sizeof(FATInfo));
+	fatInfo = malloc(sizeof(FATInfo));
 	fatInfo->fatType = getFATType(bs);
 	fatInfo->numFATSectors = le2be2(bs->numSectorsInFAT);
 	fatInfo->numCopiesFAT = bs->numCopiesFAT;
@@ -353,7 +353,7 @@ void scanDirectorySector(FILE* fs, Sector directory) {
 		int offset = e * sizeofDirEntry;
 		
 		if (directory[offset] != DELETED && directory[offset] != NOT_USED) {
-			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeofDirEntry);
+			DirectoryEntry* de = malloc(sizeofDirEntry);
 			for (b = 0; b < 8; b++) {
 				de->filename[b] = directory[offset + b];
 			}
@@ -413,7 +413,7 @@ int getNextCluster(Sector fatSector, int cluster) {
 	// even: i / 2 * 3
 	// odd: (i - 1) / 2 * 3 + 1
 	if (fatInfo->fatType == 12) {
-		ByteTriplet *bt = (ByteTriplet*)malloc(sizeof(ByteTriplet));
+		ByteTriplet *bt = malloc(sizeof(ByteTriplet));
 		if (cluster % 2) {
 			offset = (cluster - 1) / 2 * 3 + 1;
 			bt->bytes[1] = fatSector[offset];
@@ -427,7 +427,7 @@ int getNextCluster(Sector fatSector, int cluster) {
 		}
 		free(bt);
 	} else if (fatInfo->fatType == 16) {
-		BytePair *bp = (BytePair*)malloc(sizeof(BytePair));
+		BytePair *bp = malloc(sizeof(BytePair));
 		offset = cluster * 2;
 		bp->bytes[0] = fatSector[offset];
 		bp->bytes[1] = fatSector[offset + 1];
@@ -468,7 +468,7 @@ Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nex
 		free(fatSector);
 		
 		// malloc and read the new sector
-		fatSector = (Sector)malloc(sizeofSector);
+		fatSector = malloc(sizeofSector);
 		fseek(fs, startFAT + sizeofSector * curFATSector, SEEK_SET);
 		fread(fatSector, sizeofSector, 1, fs);
 	}
@@ -496,7 +496,7 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 	printf("FILENAME EXT       SIZE              CREATED    ACCESSED             MODIFIED\n");
 	
 	// malloc here just to be sure all frees have something to free
-	Sector fatSector = (Sector)malloc(sizeofSector);
+	Sector fatSector = malloc(sizeofSector);
 	
 	while (!endOfDir) {
 		
@@ -508,7 +508,7 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 			// get the correct address for this cluster
 			int absoluteCluster = getAbsoluteCluster(nextCluster);
 			
-			Sector fileSector = (Sector)malloc(sizeofSector);
+			Sector fileSector = malloc(sizeofSector);
 			fseek(fs, sizeofSector * absoluteCluster, SEEK_SET);
 			fread(fileSector, sizeofSector, 1, fs);
 			
