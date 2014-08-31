@@ -444,7 +444,7 @@ void undeleteFile(FILE* fs) {
 		printf("Restore %s? [y/n] ", fileToUndelete.name);
 		scanf("%c", &c);
 		flush();
-		c = 'y';
+		
 		if (c == 'y' || c == 'Y') {
 			
 			// make sure the file is not overwritten anywhere
