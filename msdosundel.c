@@ -290,6 +290,32 @@ ClusterList* getClusters(FILE* fs, int startingCluster, int fileSize) {
 	return cl;
 }
 
+int clusterListsCollide(ClusterList* cl1, ClusterList* cl2) {
+	ClusterList* tmp;
+	
+	while (cl1 != NULL) {
+		tmp = cl2;
+		while (tmp != NULL) {
+			if (cl1->cluster == tmp->cluster) {
+				return 1;
+			}
+			tmp = tmp->next;
+		}
+		cl1 = cl1->next;
+	}
+	return 0;
+}
+
+void freeClusterList(ClusterList* cl) {
+	ClusterList* tmp;
+	
+	while (cl != NULL) {
+		tmp = cl;
+		cl = cl->next;
+		free(tmp);
+	}
+}
+
 int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
 	// for each file f in list
 	//   if file being checked modified more recently than f
@@ -300,6 +326,7 @@ int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
 	ClusterList* cl = getClusters(fs, fileToCheck.startingCluster, fileToCheck.fileSize);
 	
 	if (!verifySize(cl, fileToCheck.fileSize)) {
+		freeClusterList(cl);
 		return 0;
 	}
 	
@@ -313,13 +340,19 @@ int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
 			// than fileToCheck. if fileToCheck was modified more recently
 			// than this file, then it is assumed that this file cannot
 			// have overwritten fileToCheck
-			//if (dirListTail->timeModified > fileToCheck.timeModified) {
-				printf("Restoring file %s\n", fileToCheck.name);
-			//}
+			if (dirListTail->timeModified > fileToCheck.timeModified) {
+				ClusterList* cl2 = getClusters(fs, dirListTail->startingCluster, dirListTail->fileSize);
+				if (clusterListsCollide(cl, cl2)) {
+					freeClusterList(cl);
+					freeClusterList(cl2);
+					return 0;
+				}
+			}
 		}
 		dirListTail = dirListTail->next;
 	}
 	
+	freeClusterList(cl);
 	return 1;
 }
 
@@ -371,9 +404,9 @@ void undeleteFile(FILE* fs) {
 					scanf("%c", &c);
 					flush();
 				}
-				//printf("Restoring %s\n", fileToUndelete.name);
-				//fseek(fs, fileToUndelete.posInFile, SEEK_SET);
-				//fwrite(&c, 1, 1, fs);
+				printf("Restoring %s\n", fileToUndelete.name);
+				fseek(fs, fileToUndelete.posInFile, SEEK_SET);
+				fwrite(&c, 1, 1, fs);
 			}
 		}
 	}
