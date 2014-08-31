@@ -83,11 +83,18 @@ FATInfo* fatInfo;
 typedef BYTE* Sector;
 
 typedef struct dirlist {
-	char name[13];
+	BYTE name[13];
 	int posInFile;
-	int posInFAT;
+	int startingCluster;
+	int timeModified;
+	int fileSize;
 	struct dirlist* next;
 } DirectoryList;
+
+typedef struct clusterlist {
+	int cluster;
+	struct clusterlist* next;
+} ClusterList;
 
 DirectoryList* dirListHead;
 DirectoryList* dirListTail;
@@ -173,6 +180,8 @@ int getAbsoluteCluster(int relativeCluster);
 int clusterRelativeToRoot(int absoluteCluster);
 int getNextCluster(Sector fatSector, int cluster);
 int isAlphabetical(char c);
+int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList);
+ClusterList* getClusters(FILE* fs, int startingCluster, int fileSize);
 Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nextCluster);
 void flush();
 void undeleteFile(FILE* fs);
@@ -209,16 +218,120 @@ void flush() {
 	while((c = getchar()) != '\n' && c != EOF);
 }
 
-int checkValid(int posInFAT) {
+int verifySize(ClusterList* clusters, int fileSize) {
+	int count = 0;
+	clusters = clusters->next;
+	while (clusters != NULL) {
+		count++;
+		clusters = clusters->next;
+	}
+	
+	int estimatedSize = count * fatInfo->sizeofSector;
+	if (estimatedSize < fileSize) {
+		return 0;
+	}
+	
+	if (estimatedSize > (fileSize + fatInfo->sizeofSector)) {
+		return 0;
+	}
+	return 1;
+}
+
+ClusterList* getClusters(FILE* fs, int startingCluster, int fileSize) {
+	int sizeofSector = fatInfo->sizeofSector;
+	int endOfFile = 0;
+	int nextCluster = startingCluster;
+	int curFATSector = -1;
+	
+	
+	// malloc here just to be sure all frees have something to free
+	Sector fatSector = (Sector)malloc(sizeofSector);
+	
+	ClusterList* cl = (ClusterList*)malloc(sizeof(ClusterList));
+	ClusterList* t = cl;
+	
+	while (!endOfFile) {
+		
+		// if we've got a good cluster
+		if ((fatInfo->fatType == 12 && nextCluster > RESERVED_12 && nextCluster < BAD_CLUSTER_12) ||
+			(fatInfo->fatType == 16 && nextCluster > RESERVED_16 && nextCluster < BAD_CLUSTER_16)
+		) {
+			// already went too far so stop
+			// don't want to stop as soon as fileSize < 0
+			// because it might actually end there
+			// instead, let it read one more if possible
+			// to be sure if it's too big, meaning it's bad
+			if (fileSize < -sizeofSector) {
+				endOfFile = 1;
+				break;
+			}
+			
+			fileSize -= sizeofSector;
+		} else {
+			
+			// otherwise stop searching
+			endOfFile = 1;
+			break;
+		}
+		
+		fatSector = getCorrectFATSector(fs, fatSector, curFATSector, nextCluster);
+		
+		t->next = (ClusterList*)malloc(sizeof(ClusterList));
+		t = t->next;
+		t->cluster = nextCluster;
+		t->next = NULL;
+		
+		// get the next cluster based on the current cluster
+		nextCluster = getNextCluster(fatSector, nextCluster);
+	}
+	
+	free(fatSector);
+	
+	return cl;
+}
+
+int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
+	// for each file f in list
+	//   if file being checked modified more recently than f
+	//     skip
+	//   else
+	//     check all its clusters against file being checked
+	
+	ClusterList* cl = getClusters(fs, fileToCheck.startingCluster, fileToCheck.fileSize);
+	
+	if (!verifySize(cl, fileToCheck.fileSize)) {
+		return 0;
+	}
+	
+	int counter = 0;
+	dirListTail = dirListHead->next;
+	while (dirListTail != NULL) {
+		counter++;
+		// don't check against the same file
+		if (counter == posInList) {
+			// only scan file's sectors if it was more recently modified
+			// than fileToCheck. if fileToCheck was modified more recently
+			// than this file, then it is assumed that this file cannot
+			// have overwritten fileToCheck
+			//if (dirListTail->timeModified > fileToCheck.timeModified) {
+				printf("Restoring file %s\n", fileToCheck.name);
+			//}
+		}
+		dirListTail = dirListTail->next;
+	}
+	
 	return 1;
 }
 
 void undeleteFile(FILE* fs) {
 	int counter = 0;
 	dirListTail = dirListHead->next;
+	
 	while (dirListTail != NULL) {
-		counter++;
-		printf("%d) %s\n", counter, dirListTail->name);
+		if (dirListTail->name[0] == DELETED) {
+			counter++;
+			printf("%d) %s\n", counter, dirListTail->name);
+		}
 		dirListTail = dirListTail->next;
 	}
 	
@@ -232,19 +345,23 @@ void undeleteFile(FILE* fs) {
 	
 	if (n != 0) {
 		dirListTail = dirListHead;
-		for (counter = 0; counter < n; counter++) {
+		for (counter = 0; counter < n;) {
 			dirListTail = dirListTail->next;
+			if (dirListTail->name[0] == DELETED) {
+				counter++;
+			}
 		}
 		
 		char c;
-		printf("Restore %s? [y/n] ", dirListTail->name);
+		DirectoryList fileToUndelete = *dirListTail;
+		printf("Restore %s? [y/n] ", fileToUndelete.name);
 		scanf("%c", &c);
 		flush();
-		
+		c = 'y';
 		if (c == 'y' || c == 'Y') {
 			
 			// make sure the file is not overwritten anywhere
-			int valid = checkValid(dirListTail->posInFAT);
+			int valid = checkValid(fs, fileToUndelete, counter - 1);
 			if (!valid) {
 				printf("Unfortunately, this file cannot be restored.\n");
 			} else {
@@ -254,9 +371,9 @@ void undeleteFile(FILE* fs) {
 					scanf("%c", &c);
 					flush();
 				}
-				printf("Restoring %s\n", dirListTail->name);
-				fseek(fs, dirListTail->posInFile, SEEK_SET);
-				fwrite(&c, 1, 1, fs);
+				//printf("Restoring %s\n", fileToUndelete.name);
+				//fseek(fs, fileToUndelete.posInFile, SEEK_SET);
+				//fwrite(&c, 1, 1, fs);
 			}
 		}
 	}
@@ -373,26 +490,8 @@ void scanDirectorySector(FILE* fs, Sector directory, int posInFile) {
 		
 		if (directory[offset] != NOT_USED) {
 			DirectoryEntry* de = (DirectoryEntry*)malloc(sizeofDirEntry);
-			for (b = 0; b < 8; b++) {
-				de->filename[b] = directory[offset + b];
-			}
-			if (de->filename[0] == ACTUAL_E5) {
-				de->filename[0] = 0xe5;
-			}
-			for (b = 0; b < 3; b++) {
-				de->extension[b] = directory[offset + 8 + b];
-			}
-			de->attributes = directory[offset + 11];
-			de->reserved = directory[offset + 12];
-			de->timeCreatedTenthSec = directory[offset + 13];
-			de->timeCreated.bytes[0] = directory[offset + 14];
-			de->timeCreated.bytes[0] = directory[offset + 15];
-			de->dateCreated.bytes[0] = directory[offset + 16];
-			de->dateCreated.bytes[0] = directory[offset + 17];
-			de->dateAccessed.bytes[0] = directory[offset + 18];
-			de->dateAccessed.bytes[0] = directory[offset + 19];
-			de->startingClusterUpper.bytes[0] = directory[offset + 20];
-			de->startingClusterUpper.bytes[0] = directory[offset + 21];
+			
+			// only get relevant details
 			de->timeModified.bytes[0] = directory[offset + 22];
 			de->timeModified.bytes[1] = directory[offset + 23];
 			de->dateModified.bytes[0] = directory[offset + 24];
@@ -415,10 +514,23 @@ void scanDirectorySector(FILE* fs, Sector directory, int posInFile) {
 					}
 				}
 			}
-		
+			
+			// make an entry in the list for every file, deleted or not
+			// this way we only have to scan the filesystem once
+			dirListTail->next = (DirectoryList*)malloc(sizeof(DirectoryList));
+			dirListTail = dirListTail->next;
+			
+			// only care about the name if the file was deleted
 			if (directory[offset] == DELETED) {
-				dirListTail->next = (DirectoryList*)malloc(sizeof(DirectoryList));
-				dirListTail = dirListTail->next;
+				for (b = 0; b < 8; b++) {
+					de->filename[b] = directory[offset + b];
+				}
+				if (de->filename[0] == ACTUAL_E5) {
+					de->filename[0] = 0xe5;
+				}
+				for (b = 0; b < 3; b++) {
+					de->extension[b] = directory[offset + 8 + b];
+				}
 				int i;
 				for (i = 7; i > 0; i--) {
 					if (de->filename[i] != ' ') {
@@ -434,12 +546,12 @@ void scanDirectorySector(FILE* fs, Sector directory, int posInFile) {
 						de->extension[i] = 0;
 					}
 				}
-			
+				
 				int pos = 0;
 				// loop through until the end of the filename
 				for (i = 0; i < 8; i++) {
 					if (de->filename[i]) {
-						dirListTail->name[pos] = de->filename[i];
+						dirListTail->name[pos] = 0xff & de->filename[i];
 						pos++;
 					} else {
 						break;
@@ -461,10 +573,20 @@ void scanDirectorySector(FILE* fs, Sector directory, int posInFile) {
 				}
 				// make sure the string is properly terminated
 				dirListTail->name[pos] = 0;
-				dirListTail->posInFile = posInFile + e * sizeofDirEntry;
-				dirListTail->posInFAT = le2be2(de->startingCluster);
-				dirListTail->next = NULL;
+			} else {
+				// not a deleted file
+				// give the name a letter so it'll be ignored
+				// while printing out the list of deleted files
+				dirListTail->name[0] = directory[offset];
 			}
+			
+			dirListTail->posInFile = posInFile + e * sizeofDirEntry;
+			dirListTail->startingCluster = le2be2(de->startingCluster);
+			int timeModified = le2be2(de->timeModified);
+			int dateModified = le2be2(de->dateModified);
+			dirListTail->timeModified = timeModified | (dateModified << 16);
+			dirListTail->fileSize = le2be4(de->fileSize);
+			dirListTail->next = NULL;
 		
 			free(de);
 		}
