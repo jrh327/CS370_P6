@@ -358,23 +358,11 @@ void readBootStrapSector(FILE* fs, BootSector* bs) {
  * @param de The directory entry to display
  */
 void displayDirectoryEntry(DirectoryEntry* de) {
-	int timeCreated = le2be2(de->timeCreated);
-	int hourCreated = (timeCreated & 0xf800) >> 11;
-	int minCreated = (timeCreated & 0x7e0) >> 5;
-	int secCreated = (timeCreated & 0x1f);
-	secCreated = secCreated * 2; // time resolution of 2 seconds
-	
-	int dateCreated = le2be2(de->dateCreated);
-	int yearCreated = ((dateCreated & 0xfe00) >> 9);
-	int monthCreated = (dateCreated & 0x1e0) >> 5;
-	int dayCreated = (dateCreated & 0x1f);
-	yearCreated = yearCreated + 1980; // year is offset by 1980
-	
-	int dateAccessed = le2be2(de->dateAccessed);
-	int yearAccessed = ((dateAccessed & 0xfe00) >> 9);
-	int monthAccessed = (dateAccessed & 0x1e0) >> 5;
-	int dayAccessed = (dateAccessed & 0x1f);
-	yearAccessed = yearAccessed + 1980;
+	int dateModified = le2be2(de->dateModified);
+	int yearModified = ((dateModified & 0xfe00) >> 9);
+	int monthModified = (dateModified & 0x1e0) >> 5;
+	int dayModified = (dateModified & 0x1f);
+	yearModified = yearModified + 1980;
 	
 	int timeModified = le2be2(de->timeModified);
 	int hourModified = (timeModified & 0xf800) >> 11;
@@ -382,19 +370,39 @@ void displayDirectoryEntry(DirectoryEntry* de) {
 	int secModified = (timeModified & 0x1f);
 	secModified = secModified * 2;
 	
-	int dateModified = le2be2(de->dateModified);
-	int yearModified = ((dateModified & 0xfe00) >> 9);
-	int monthModified = (dateModified & 0x1e0) >> 5;
-	int dayModified = (dateModified & 0x1f);
-	yearModified = yearModified + 1980;
-	
-	printf("%8.*s %3.*s %10d  %02d-%02d-%04d %02d:%02d:%02d  %02d-%02d-%04d  %02d-%02d-%04d %02d:%02d:%02d\n",
-		8, de->filename, 3, de->extension, le2be4(de->fileSize),
-		monthCreated, dayCreated, yearCreated,
-		hourCreated, minCreated, secCreated,
-		monthAccessed, dayAccessed, yearAccessed,
-		monthModified, dayModified, yearModified,
-		hourModified, minModified, secModified);
+	if (fatInfo->fatType == 12) {
+		// FAT12 does not use the created and accessed fields
+		printf("%8.*s %3.*s %10d  %02d-%02d-%04d %02d:%02d:%02d\n",
+			8, de->filename, 3, de->extension, le2be4(de->fileSize),
+			monthModified, dayModified, yearModified,
+			hourModified, minModified, secModified);
+	} else {
+		int timeCreated = le2be2(de->timeCreated);
+		int hourCreated = (timeCreated & 0xf800) >> 11;
+		int minCreated = (timeCreated & 0x7e0) >> 5;
+		int secCreated = (timeCreated & 0x1f);
+		secCreated = secCreated * 2; // time resolution of 2 seconds
+		
+		int dateCreated = le2be2(de->dateCreated);
+		int yearCreated = ((dateCreated & 0xfe00) >> 9);
+		int monthCreated = (dateCreated & 0x1e0) >> 5;
+		int dayCreated = (dateCreated & 0x1f);
+		yearCreated = yearCreated + 1980; // year is offset by 1980
+		
+		int dateAccessed = le2be2(de->dateAccessed);
+		int yearAccessed = ((dateAccessed & 0xfe00) >> 9);
+		int monthAccessed = (dateAccessed & 0x1e0) >> 5;
+		int dayAccessed = (dateAccessed & 0x1f);
+		yearAccessed = yearAccessed + 1980;
+		
+		printf("%8.*s %3.*s %10d  %02d-%02d-%04d %02d:%02d:%02d  %02d-%02d-%04d  %02d-%02d-%04d %02d:%02d:%02d\n",
+			8, de->filename, 3, de->extension, le2be4(de->fileSize),
+			monthCreated, dayCreated, yearCreated,
+			hourCreated, minCreated, secCreated,
+			monthAccessed, dayAccessed, yearAccessed,
+			monthModified, dayModified, yearModified,
+			hourModified, minModified, secModified);
+	}
 }
 
 /**
@@ -570,7 +578,11 @@ void scanDirectory(FILE* fs, int cluster, int maxClusters) {
 	int nextCluster = cluster;
 	int curFATSector = -1;
 	
-	printf("FILENAME EXT       SIZE              CREATED    ACCESSED             MODIFIED\n");
+	if (fatInfo->fatType == 12) {
+		printf("FILENAME EXT       SIZE             MODIFIED\n");
+	} else {
+		printf("FILENAME EXT       SIZE              CREATED    ACCESSED             MODIFIED\n");
+	}
 	
 	// malloc here just to be sure all frees have something to free
 	Sector fatSector = malloc(sizeofSector);
