@@ -377,7 +377,7 @@ int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
 	while (dirListTail != NULL) {
 		counter++;
 		// don't check against the same file
-		if (counter == posInList) {
+		if (counter != posInList) {
 			// only scan file's sectors if it was more recently modified
 			// than fileToCheck. if fileToCheck was modified more recently
 			// than this file, then it is assumed that this file cannot
