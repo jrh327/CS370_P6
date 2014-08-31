@@ -216,11 +216,22 @@ int main (int argc, char *argv[]) {
 	return 0;
 }
 
+/**
+ * Empties out stdin
+ */
 void flush() {
 	char c;
 	while((c = getchar()) != '\n' && c != EOF);
 }
 
+/**
+ * Checks a cluster list against a file size
+ * to determine if the file is the correct size
+ * 
+ * @param clusters The list of clusters to check
+ * @param fileSize The intended size of the file
+ * @return 1 if the file is the correct size, otherwise 0
+ */
 int verifySize(ClusterList* clusters, int fileSize) {
 	int count = 0;
 	clusters = clusters->next;
@@ -240,6 +251,14 @@ int verifySize(ClusterList* clusters, int fileSize) {
 	return 1;
 }
 
+/**
+ * Gets a list of all the clusters in a file's cluster chain
+ * 
+ * @param fs A file handle to the disk image
+ * @param startingCluster Where in the FAT the file starts
+ * @param fileSize The intended size of the file
+ * @return The list of the file's clusters
+ */
 ClusterList* getClusters(FILE* fs, int startingCluster, int fileSize) {
 	int sizeofSector = fatInfo->sizeofSector;
 	int endOfFile = 0;
@@ -293,6 +312,13 @@ ClusterList* getClusters(FILE* fs, int startingCluster, int fileSize) {
 	return cl;
 }
 
+/**
+ * Compares two ClusterLists to see if they have any of the same clusters
+ * 
+ * @param cl1 One of the cluster lists to check
+ * @param cl2 One of the cluster lists to check
+ * @param 1 if the cluster lists share a cluster, otherwise 0
+ */
 int clusterListsCollide(ClusterList* cl1, ClusterList* cl2) {
 	ClusterList* tmp;
 	
@@ -309,6 +335,11 @@ int clusterListsCollide(ClusterList* cl1, ClusterList* cl2) {
 	return 0;
 }
 
+/**
+ * Frees malloc'd memory from a ClusterList
+ * 
+ * @param cl The cluster list to free
+ */
 void freeClusterList(ClusterList* cl) {
 	ClusterList* tmp;
 	
@@ -319,15 +350,23 @@ void freeClusterList(ClusterList* cl) {
 	}
 }
 
+/**
+ * Checks that a deleted file has not been overwritten at all
+ * 
+ * @param fs A file handle to the disk image
+ * @param fileToCheck The file to be undeleted if valid
+ * @param posInList the file's position in the list of all files
+ * @return 1 if the file is valid and can be undeleted, otherwise 0
+ */
 int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
-	// for each file f in list
-	//   if file being checked modified more recently than f
-	//     skip
-	//   else
-	//     check all its clusters against file being checked
 	
+	// get the cluster list for this file now so its size can be checked
+	// and so it doesn't have to be gotten later while comparing to other files
 	ClusterList* cl = getClusters(fs, fileToCheck.startingCluster, fileToCheck.fileSize);
 	
+	// check that the file has the correct size first
+	// if its chain can be followed to an incorrect size
+	// then it is known that it has been overwritten somewhere
 	if (!verifySize(cl, fileToCheck.fileSize)) {
 		freeClusterList(cl);
 		return 0;
@@ -350,6 +389,7 @@ int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
 					freeClusterList(cl2);
 					return 0;
 				}
+				freeClusterList(cl2);
 			}
 		}
 		dirListTail = dirListTail->next;
@@ -359,10 +399,16 @@ int checkValid(FILE* fs, DirectoryList fileToCheck, int posInList) {
 	return 1;
 }
 
+/**
+ * Allows the user to select a deleted file to restore
+ * 
+ * @param fs A file handle to the disk image
+ */
 void undeleteFile(FILE* fs) {
 	int counter = 0;
 	dirListTail = dirListHead->next;
 	
+	// print out only the delete files
 	while (dirListTail != NULL) {
 		if (dirListTail->name[0] == DELETED) {
 			counter++;
@@ -371,6 +417,7 @@ void undeleteFile(FILE* fs) {
 		dirListTail = dirListTail->next;
 	}
 	
+	// ask for the number in the list of the file to undelete
 	int n = -1;
 	char dummy;
 	while (n < 0 || n > counter) {
@@ -388,6 +435,7 @@ void undeleteFile(FILE* fs) {
 			}
 		}
 		
+		// confirm that this is the file to undelete
 		char c;
 		DirectoryList fileToUndelete = *dirListTail;
 		printf("Restore %s? [y/n] ", fileToUndelete.name);
@@ -415,6 +463,12 @@ void undeleteFile(FILE* fs) {
 	}
 }
 
+/**
+ * Checks if a character is a letter
+ * 
+ * @param c The character to check
+ * @return 1 if `c` is a letter, otherwise 0
+ */
 int isAlphabetical(char c) {
 	if (c >= 'a' && c <= 'z') {
 		return 1;
@@ -425,10 +479,24 @@ int isAlphabetical(char c) {
 	return 0;
 }
 
+/**
+ * Converts a two-byte little-endian value to a big-endian integer
+ * 
+ * @param bytes The bytes to convert
+ * @return The big-endian value of `bytes`
+ */
 int le2be2(BytePair bytes) {
 	return (bytes.bytes[0] + (bytes.bytes[1] << 8));
 }
 
+/**
+ * Extracts a twelve-bit little-endian value from a trio of bytes
+ * and converts it to a big-endian integer
+ * 
+ * @param bytes The bytes to convert
+ * @param which The first or second value stored in `bytes`
+ * @return The extracted value
+ */
 int le2be3(ByteTriplet bytes, int which) {
 	if (which != 1 && which != 2) {
 		which = 1;
@@ -451,6 +519,12 @@ int le2be3(ByteTriplet bytes, int which) {
 	return result;
 }
 
+/**
+ * Converts a four-byte little-endian value to a big-endian integer
+ * 
+ * @param bytes The bytes to convert
+ * @return The big-endian value of `bytes`
+ */
 int le2be4(ByteQuad bytes) {
 	int res = bytes.bytes[0];
 	int i;
@@ -460,6 +534,12 @@ int le2be4(ByteQuad bytes) {
 	return res;
 }
 
+/**
+ * Calculates the total number of clusters in the filesystem
+ * 
+ * @param bs The bootsector of the filesystem
+ * @return The number of clusters in the filesystem
+ */
 int getNumberClusters(BootSector* bs) {
 	unsigned int root_dir_sectors = ((le2be2(bs->numEntriesRootDir) * 32) + (le2be2(bs->numBytesPerSector) - 1)) / le2be2(bs->numBytesPerSector);
 	unsigned int data_sectors;
@@ -471,6 +551,12 @@ int getNumberClusters(BootSector* bs) {
 	return (int)(data_sectors / bs->numSectorsPerCluster);
 }
 
+/**
+ * Determines if the FAT is FAT12, FAT16, or FAT32
+ * 
+ * @param bs The bootsector of the filesystem
+ * @return The number version of FAT
+ */
 int getFATType(BootSector* bs) {
 	int total_clusters = getNumberClusters(bs);
 	if (total_clusters < 4085) {
@@ -484,14 +570,34 @@ int getFATType(BootSector* bs) {
 	}
 }
 
+/**
+ * Calculates a cluster's actual position in the user data section
+ * because of the fact that clusters are numbered starting at 2
+ * 
+ * @param relativeCluster The cluster whose position is to be calculated
+ * @return The actual position of the cluster in the user data section
+ */
 int getAbsoluteCluster(int relativeCluster) {
 	return relativeCluster - 2 + fatInfo->firstDataSector;
 }
 
+/**
+ * Calculates a cluster's position in the filesystem
+ * after the boot sector and FATs
+ * 
+ * @param absoluteCluster The cluster's position in the user data section
+ * @return The position of the cluster after the boot sector and FATs
+ */
 int clusterRelativeToRoot(int absoluteCluster) {
 	return absoluteCluster + fatInfo->numRootClusters;
 }
 
+/**
+ * Reads information from the bootstrap sector into a BootSector object
+ *
+ * @param fs File handle to the disk image
+ * @param bs The BootSector object to receive the data
+ */
 void readBootStrapSector(FILE* fs, BootSector* bs) {
 	fread(bs, sizeof(BootSector), 1, fs);
 	
@@ -510,7 +616,7 @@ void readBootStrapSector(FILE* fs, BootSector* bs) {
 }
 
 /**
- * Scans a sector of a directory and prints out its entries
+ * Scans a sector of a directory and extracts information
  * 
  * @param fs - The file handle for the filesystem
  * @param directory - The sector to scan
@@ -629,6 +735,13 @@ void scanDirectorySector(FILE* fs, Sector directory, int posInFile) {
 	}
 }
 
+/**
+ * Gets the next cluster in a file's cluster chain
+ * 
+ * @param fatSector The sector of the FAT containing the current cluster
+ * @param cluster The current cluster in the chain
+ * @return The next cluster in the chain
+ */
 int getNextCluster(Sector fatSector, int cluster) {
 	int nextCluster;
 	int offset;
@@ -661,6 +774,16 @@ int getNextCluster(Sector fatSector, int cluster) {
 	return nextCluster;
 }
 
+/**
+ * Makes sure the correct FAT sector has been read in to get
+ * the next cluster in a chain
+ * 
+ * @param fs A file handle to the disk image
+ * @param fatSector The currently held FAT sector
+ * @param curFATSector The position of `fatSector` in the FAT
+ * @param nextCluster The cluster that will be checked
+ * @return The FAT sector that `nextCluster` is within
+ */
 Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nextCluster) {
 	int sizeofSector = fatInfo->sizeofSector;
 	int startFAT = sizeofSector * fatInfo->reservedSectors;
@@ -699,7 +822,7 @@ Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nex
 }
 
 /**
- * Scans through a directory and lists its contents
+ * Scans through a directory and extracts file information
  * 
  * @param fs - The file handle for the filesystem
  * @param cluster - The cluster to start at

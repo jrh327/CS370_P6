@@ -190,10 +190,24 @@ int main (int argc, char *argv[]) {
 	return 0;
 }
 
+/**
+ * Converts a two-byte little-endian value to a big-endian integer
+ * 
+ * @param bytes The bytes to convert
+ * @return The big-endian value of `bytes`
+ */
 int le2be2(BytePair bytes) {
 	return (bytes.bytes[0] + (bytes.bytes[1] << 8));
 }
 
+/**
+ * Extracts a twelve-bit little-endian value from a trio of bytes
+ * and converts it to a big-endian integer
+ * 
+ * @param bytes The bytes to convert
+ * @param which The first or second value stored in `bytes`
+ * @return The extracted value
+ */
 int le2be3(ByteTriplet bytes, int which) {
 	if (which != 1 && which != 2) {
 		which = 1;
@@ -216,6 +230,12 @@ int le2be3(ByteTriplet bytes, int which) {
 	return result;
 }
 
+/**
+ * Converts a four-byte little-endian value to a big-endian integer
+ * 
+ * @param bytes The bytes to convert
+ * @return The big-endian value of `bytes`
+ */
 int le2be4(ByteQuad bytes) {
 	int res = bytes.bytes[0];
 	int i;
@@ -225,6 +245,12 @@ int le2be4(ByteQuad bytes) {
 	return res;
 }
 
+/**
+ * Calculates the total number of clusters in the filesystem
+ * 
+ * @param bs The bootsector of the filesystem
+ * @return The number of clusters in the filesystem
+ */
 int getNumberClusters(BootSector* bs) {
 	unsigned int root_dir_sectors = ((le2be2(bs->numEntriesRootDir) * 32) + (le2be2(bs->numBytesPerSector) - 1)) / le2be2(bs->numBytesPerSector);
 	unsigned int data_sectors;
@@ -236,6 +262,12 @@ int getNumberClusters(BootSector* bs) {
 	return (int)(data_sectors / bs->numSectorsPerCluster);
 }
 
+/**
+ * Determines if the FAT is FAT12, FAT16, or FAT32
+ * 
+ * @param bs The bootsector of the filesystem
+ * @return The number version of FAT
+ */
 int getFATType(BootSector* bs) {
 	int total_clusters = getNumberClusters(bs);
 	if (total_clusters < 4085) {
@@ -249,14 +281,34 @@ int getFATType(BootSector* bs) {
 	}
 }
 
+/**
+ * Calculates a cluster's actual position in the user data section
+ * because of the fact that clusters are numbered starting at 2
+ * 
+ * @param relativeCluster The cluster whose position is to be calculated
+ * @return The actual position of the cluster in the user data section
+ */
 int getAbsoluteCluster(int relativeCluster) {
 	return relativeCluster - 2 + fatInfo->firstDataSector;
 }
 
+/**
+ * Calculates a cluster's position in the filesystem
+ * after the boot sector and FATs
+ * 
+ * @param absoluteCluster The cluster's position in the user data section
+ * @return The position of the cluster after the boot sector and FATs
+ */
 int clusterRelativeToRoot(int absoluteCluster) {
 	return absoluteCluster + fatInfo->numRootClusters;
 }
 
+/**
+ * Reads information from the bootstrap sector into a BootSector object
+ *
+ * @param fs File handle to the disk image
+ * @param bs The BootSector object to receive the data
+ */
 void readBootStrapSector(FILE* fs, BootSector* bs) {
 	fread(bs, sizeof(BootSector), 1, fs);
 	
@@ -273,6 +325,12 @@ void readBootStrapSector(FILE* fs, BootSector* bs) {
 	fatInfo->totalSize = 0;
 }
 
+/**
+ * Reads a file's data from the disk image and writes it to file
+ * 
+ * @param fs A file handle to the disk image
+ * @param de The directory entry of the file to extract
+ */
 void extractFile(FILE* fs, DirectoryEntry* de) {
 	int i;
 	for (i = 7; i > 0; i--) {
@@ -392,7 +450,7 @@ void extractFile(FILE* fs, DirectoryEntry* de) {
 }
 
 /**
- * Scans a sector of a directory and prints out its entries
+ * Scans a sector of a directory and extracts each file
  * 
  * @param fs - The file handle for the filesystem
  * @param directory - The sector to scan
@@ -459,6 +517,13 @@ void scanDirectorySector(FILE* fs, Sector directory) {
 	}
 }
 
+/**
+ * Gets the next cluster in a file's cluster chain
+ * 
+ * @param fatSector The sector of the FAT containing the current cluster
+ * @param cluster The current cluster in the chain
+ * @return The next cluster in the chain
+ */
 int getNextCluster(Sector fatSector, int cluster) {
 	int nextCluster;
 	int offset;
@@ -491,6 +556,16 @@ int getNextCluster(Sector fatSector, int cluster) {
 	return nextCluster;
 }
 
+/**
+ * Makes sure the correct FAT sector has been read in to get
+ * the next cluster in a chain
+ * 
+ * @param fs A file handle to the disk image
+ * @param fatSector The currently held FAT sector
+ * @param curFATSector The position of `fatSector` in the FAT
+ * @param nextCluster The cluster that will be checked
+ * @return The FAT sector that `nextCluster` is within
+ */
 Sector getCorrectFATSector(FILE* fs, Sector fatSector, int curFATSector, int nextCluster) {
 	int sizeofSector = fatInfo->sizeofSector;
 	int startFAT = sizeofSector * fatInfo->reservedSectors;
