@@ -321,6 +321,9 @@ ClusterList* getClusters(FILE* fs, int startingCluster, int fileSize) {
  */
 int clusterListsCollide(ClusterList* cl1, ClusterList* cl2) {
 	ClusterList* tmp;
+	// the heads of the lists are empty
+	cl1 = cl1->next;
+	cl2 = cl2->next;
 	
 	while (cl1 != NULL) {
 		tmp = cl2;
