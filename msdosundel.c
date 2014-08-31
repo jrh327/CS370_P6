@@ -85,6 +85,7 @@ typedef BYTE* Sector;
 typedef struct dirlist {
 	char name[13];
 	int posInFile;
+	int posInFAT;
 	struct dirlist* next;
 } DirectoryList;
 
@@ -208,6 +209,10 @@ void flush() {
 	while((c = getchar()) != '\n' && c != EOF);
 }
 
+int checkValid(int posInFAT) {
+	return 1;
+}
+
 void undeleteFile(FILE* fs) {
 	int counter = 0;
 	dirListTail = dirListHead->next;
@@ -237,15 +242,22 @@ void undeleteFile(FILE* fs) {
 		flush();
 		
 		if (c == 'y' || c == 'Y') {
-			c = 0;
-			while (!isAlphabetical(c)) {
-				printf("Enter the first letter of the file name: ");
-				scanf("%c", &c);
-				flush();
+			
+			// make sure the file is not overwritten anywhere
+			int valid = checkValid(dirListTail->posInFAT);
+			if (!valid) {
+				printf("Unfortunately, this file cannot be restored.\n");
+			} else {
+				c = 0;
+				while (!isAlphabetical(c)) {
+					printf("Enter the first letter of the file name: ");
+					scanf("%c", &c);
+					flush();
+				}
+				printf("Restoring %s\n", dirListTail->name);
+				fseek(fs, dirListTail->posInFile, SEEK_SET);
+				fwrite(&c, 1, 1, fs);
 			}
-			printf("Restoring %s\n", dirListTail->name);
-			fseek(fs, dirListTail->posInFile, SEEK_SET);
-			fwrite(&c, 1, 1, fs);
 		}
 	}
 }
@@ -450,6 +462,7 @@ void scanDirectorySector(FILE* fs, Sector directory, int posInFile) {
 				// make sure the string is properly terminated
 				dirListTail->name[pos] = 0;
 				dirListTail->posInFile = posInFile + e * sizeofDirEntry;
+				dirListTail->posInFAT = le2be2(de->startingCluster);
 				dirListTail->next = NULL;
 			}
 		
